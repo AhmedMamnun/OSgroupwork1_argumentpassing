@@ -236,6 +236,26 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+  
+#define MAX_ARGUMENTS 100
+
+char *argument_values[MAX_ARGUMENTS];
+int argument_count = 0;
+
+// Get the program name as the first argument
+char *program_name = get_program(argv[0]);
+
+argument_values[argument_count++] = program_name;
+
+char *token;
+char *save_ptr = NULL;
+
+// Parse and store the remaining arguments
+for (token = strtok_r(NULL, " ", &save_ptr);
+     token != NULL && argument_count < MAX_ARGUMENTS;
+     token = strtok_r(NULL, " ", &save_ptr)) {
+    argument_values[argument_count++] = token;
+}
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
@@ -244,11 +264,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (argv[0]);
 
   if (file == NULL) 
     {
-	printf ("load: %s: open failed\n", file_name);
+	    printf ("load: %s: open failed\n", argv[0]);
       goto done; 
     }
 
@@ -261,7 +281,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", argv[0]);
       goto done; 
     }
 
@@ -450,7 +470,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, char **argument_values, int argument_count) 
 {
   uint8_t *kpage;
   bool success = false;
@@ -461,6 +481,39 @@ setup_stack (void **esp)
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success) {
         *esp = PHYS_BASE - 12;
+        // Calculate the total size needed on the stack for arguments and pointers
+size_t total_size = 0;
+for (int count = 0; count < argument_count; ++count) {
+    total_size += (strlen(argument_values[count]) + 1) * sizeof(char) + sizeof(uint32_t *);
+}
+
+// Calculate the initial stack pointer position
+*esp = PHYS_BASE - total_size;
+
+uint8_t *esp_ptr = *esp;
+
+// Iterate through the arguments and pointers, setting up the stack
+for (int count = 0; count < argument_count; ++count) {
+    size_t size = (strlen(argument_values[count]) + 1) * sizeof(char);
+    
+    // Copy the argument value to the stack
+    memcpy(esp_ptr, argument_values[count], size);
+    array[count] = (uint32_t *)esp_ptr;
+    
+    // Adjust the stack pointer for the argument value
+    esp_ptr += size;
+    
+    // Store the address of the argument in the array at this location
+    *(uint32_t **)esp_ptr = array[count];
+    
+    // Adjust the stack pointer for the argument pointer
+    esp_ptr += sizeof(uint32_t *);
+}
+
+// Adjust the stack pointer for the final NULL pointer
+*esp = esp_ptr - sizeof(uint32_t *);
+      
+
       } else
         palloc_free_page (kpage);
     }
